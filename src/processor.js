@@ -1,4 +1,4 @@
-const ExcelJS = require('exceljs');
+const XLSX = require('xlsx');
 const dayjs = require('dayjs');
 
 const AGE_BUCKETS = [
@@ -17,65 +17,67 @@ function bucketForDays(days) {
 
 async function processBuffer(buffer) {
   if (!buffer) throw new Error('No data buffer provided to processBuffer');
-  // accept ArrayBuffer/Uint8Array as well as Buffer
   if (!Buffer.isBuffer(buffer) && buffer && buffer.buffer) {
     buffer = Buffer.from(buffer);
   }
   if (!Buffer.isBuffer(buffer)) throw new Error('processBuffer expects a Buffer or ArrayBuffer');
 
-  const workbook = new ExcelJS.Workbook();
+  if (buffer.length < 4 || buffer[0] !== 0x50 || buffer[1] !== 0x4B) {
+    throw new Error('Not a .xlsx (ZIP) file — received a different file type (maybe .xls or CSV)');
+  }
+
+  let workbook;
   try {
-    // Quick check: .xlsx files are ZIP archives and start with 'PK' (0x50 0x4B)
-    if (buffer.length < 4 || buffer[0] !== 0x50 || buffer[1] !== 0x4B) {
-      throw new Error('Not a .xlsx (ZIP) file — received a different file type (maybe .xls or CSV)');
-    }
-    await workbook.xlsx.load(buffer);
+    workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true });
   } catch (err) {
     throw new Error('Invalid or corrupted Excel file: ' + err.message);
   }
-  const worksheet = workbook.worksheets[0];
-  if (!worksheet) throw new Error('No worksheet found in workbook');
 
-  // Read header row and map columns
-  const headerRow = worksheet.getRow(1);
-  const headers = {};
-  headerRow.eachCell((cell, colNumber) => {
-    const val = String(cell.value || '').trim().toLowerCase();
-    headers[val] = colNumber;
-  });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) throw new Error('No worksheet found in workbook');
+  const worksheet = workbook.Sheets[sheetName];
+
+  // Sheet may have a decorative first row; scan row 1 and row 2 for real headers
+  const rawRows = XLSX.utils.sheet_to_json(worksheet, { raw: false, defval: '', header: 1 });
+  if (rawRows.length < 2) throw new Error('Worksheet has no data rows');
+
+  // Find the header row: first row where >3 non-empty cells exist
+  let headerRowIdx = 0;
+  for (let i = 0; i < Math.min(rawRows.length, 5); i++) {
+    if (rawRows[i].filter(v => String(v).trim()).length > 3) { headerRowIdx = i; break; }
+  }
+
+  const headerRow = rawRows[headerRowIdx].map(v => String(v).trim().toLowerCase());
 
   const col = (names) => {
     for (const n of names) {
-      const key = n.toLowerCase();
-      if (headers[key]) return headers[key];
+      const idx = headerRow.findIndex(h => h.includes(n.toLowerCase()));
+      if (idx !== -1) return idx;
     }
-    return null;
+    return -1;
   };
 
-  const ticketIdCol = col(['ticketid', 'ticket id', 'id']);
-  const openedCol = col(['openeddate', 'opened date', 'opened', 'created']);
-  const statusCol = col(['status']);
-  const callerCol = col(['caller']);
-  const engineerCol = col(['engineer']);
+  const openedColIdx = col(['log time', 'openeddate', 'opened date', 'opened', 'created']);
+  const statusColIdx = col(['status']);
+  const engineerColIdx = col(['assigned to engineer', 'engineer']);
 
   const aggregated = {}; // engineer -> status -> bucket -> count
   const engineersSet = new Set();
   const statusesSet = new Set();
 
-  worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-    if (rowNumber === 1) return; // skip header
-    const openedCell = openedCol ? row.getCell(openedCol).value : null;
+  for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
+    const row = rawRows[i];
+    const openedRaw = openedColIdx >= 0 ? row[openedColIdx] : null;
     let openedDate = null;
-    if (openedCell instanceof Date) openedDate = dayjs(openedCell);
-    else if (openedCell && typeof openedCell === 'object' && openedCell.text) openedDate = dayjs(openedCell.text);
-    else if (openedCell) openedDate = dayjs(String(openedCell));
+    if (openedRaw instanceof Date) openedDate = dayjs(openedRaw);
+    else if (openedRaw) openedDate = dayjs(String(openedRaw));
 
     const now = dayjs();
     const days = openedDate && openedDate.isValid() ? now.diff(openedDate, 'day') : 0;
     const bucket = bucketForDays(days);
 
-    const engineer = engineerCol ? String(row.getCell(engineerCol).text || row.getCell(engineerCol).value || '').trim() : '';
-    const status = statusCol ? String(row.getCell(statusCol).text || row.getCell(statusCol).value || '').trim() : '';
+    const engineer = engineerColIdx >= 0 ? String(row[engineerColIdx] || '').trim() : '';
+    const status = statusColIdx >= 0 ? String(row[statusColIdx] || '').trim() : '';
 
     const engKey = engineer || 'Unassigned';
     const statusKey = status || 'Unknown';
@@ -87,7 +89,7 @@ async function processBuffer(buffer) {
     if (!aggregated[engKey][statusKey]) aggregated[engKey][statusKey] = {};
     if (!aggregated[engKey][statusKey][bucket]) aggregated[engKey][statusKey][bucket] = 0;
     aggregated[engKey][statusKey][bucket] += 1;
-  });
+  }
 
   return {
     aggregated,
