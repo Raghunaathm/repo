@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Incident Reporter</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;margin:20px}
+    input[type=file]{margin-bottom:10px}
+    #result{margin-top:20px}
+  </style>
+</head>
+<body>
+  <h1>Incident Reporter</h1>
+  <form id="uploadForm">
+    <input type="file" id="file" name="file" accept=".xlsx" required />
+    <button type="submit">Upload & Process</button>
+  </form>
+  <div id="status"></div>
+  <div id="result"></div>
+
+  <script>
+    const form = document.getElementById('uploadForm');
+    const status = document.getElementById('status');
+    const result = document.getElementById('result');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = document.getElementById('file').files[0];
+      if (!f) return alert('Choose a file');
+      status.textContent = 'Uploading...';
+      result.innerHTML = '';
+      const fd = new FormData();
+      fd.append('file', f);
+      try {
+        const res = await fetch('/upload', { method: 'POST', body: fd });
+        if (!res.ok) throw new Error('Upload failed');
+        const text = await res.text();
+        status.textContent = 'Processed.';
+        result.innerHTML = text;
+      } catch (err) {
+        console.error(err);
+        status.textContent = 'Error: ' + err.message;
+      }
+    });
+  </script>
+</body>
+</html>
