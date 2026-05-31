@@ -104,26 +104,53 @@ function renderHtmlTable(data) {
   let html = `<!doctype html><html><head><meta charset="utf-8"><title>Incident Report</title><style>table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px;text-align:center}th{background:#eee}</style></head><body>`;
   html += `<h2>Incident Report</h2>`;
   html += `<table>`;
-  html += `<thead><tr><th>Engineer</th><th>Status</th>`;
-  for (const b of buckets) html += `<th>${b}</th>`;
-  html += `</tr></thead><tbody>`;
+  // Build two-row header: first row groups buckets under each status
+  html += `<thead>`;
+  html += `<tr><th rowspan="2">Engineer</th>`;
+  if (statuses.length === 0) {
+    // fallback: single status column with buckets
+    html += `<th colspan="${buckets.length}">Status</th>`;
+  } else {
+    for (const status of statuses) {
+      html += `<th colspan="${buckets.length}">${escapeHtml(status)}</th>`;
+    }
+  }
+  html += `</tr>`;
 
+  // second header row: bucket names repeated for each status
+  html += `<tr>`;
+  if (statuses.length === 0) {
+    for (const b of buckets) html += `<th>${b}</th>`;
+  } else {
+    for (let i = 0; i < statuses.length; i++) {
+      for (const b of buckets) html += `<th>${b}</th>`;
+    }
+  }
+  html += `</tr>`;
+  html += `</thead><tbody>`;
+
+  // Body: one row per engineer, columns are status × buckets
   for (const engineer of engineers) {
-    const statusesForEngineer = Object.keys(aggregated[engineer] || {}).sort();
-    if (statusesForEngineer.length === 0) {
-      html += `<tr><td>${escapeHtml(engineer)}</td><td></td>`;
-      for (const b of buckets) html += `<td>0</td>`;
-      html += `</tr>`;
-      continue;
-    }
-    for (const status of statusesForEngineer) {
-      html += `<tr><td>${escapeHtml(engineer)}</td><td>${escapeHtml(status)}</td>`;
+    html += `<tr><td>${escapeHtml(engineer)}</td>`;
+    if (statuses.length === 0) {
+      // no statuses found, sum across all statuses for each bucket
       for (const b of buckets) {
-        const val = (aggregated[engineer] && aggregated[engineer][status] && aggregated[engineer][status][b]) || 0;
-        html += `<td>${val}</td>`;
+        let sum = 0;
+        const byStatus = aggregated[engineer] || {};
+        for (const s of Object.keys(byStatus)) {
+          sum += (byStatus[s] && byStatus[s][b]) || 0;
+        }
+        html += `<td>${sum}</td>`;
       }
-      html += `</tr>`;
+    } else {
+      for (const status of statuses) {
+        for (const b of buckets) {
+          const val = (aggregated[engineer] && aggregated[engineer][status] && aggregated[engineer][status][b]) || 0;
+          html += `<td>${val}</td>`;
+        }
+      }
     }
+    html += `</tr>`;
   }
 
   html += `</tbody></table></body></html>`;
