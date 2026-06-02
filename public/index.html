@@ -13,6 +13,10 @@
   <h1>Incident Reporter</h1>
   <form id="uploadForm">
     <input type="file" id="file" name="file" accept=".xlsx" required />
+    <div>
+      <label>Start date: <input type="date" id="startDate" name="startDate" /></label>
+      <label>End date: <input type="date" id="endDate" name="endDate" /></label>
+    </div>
     <button type="submit">Upload & Process</button>
   </form>
   <div id="status"></div>
@@ -31,6 +35,10 @@
       result.innerHTML = '';
       const fd = new FormData();
       fd.append('file', f);
+      const start = document.getElementById('startDate').value;
+      const end = document.getElementById('endDate').value;
+      if (start) fd.append('startDate', start);
+      if (end) fd.append('endDate', end);
       try {
         const res = await fetch('/upload', { method: 'POST', body: fd });
         if (!res.ok) throw new Error('Upload failed');

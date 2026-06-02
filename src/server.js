@@ -14,7 +14,11 @@ const upload = multer({ storage: multer.memoryStorage() });
 app.post('/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).send('No file uploaded');
-    const aggregated = await processBuffer(req.file.buffer);
+    const options = {
+      startDate: req.body.startDate || null,
+      endDate: req.body.endDate || null,
+    };
+    const aggregated = await processBuffer(req.file.buffer, options);
     const html = renderHtmlTable(aggregated);
     res.send(html);
   } catch (err) {

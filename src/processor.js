@@ -15,7 +15,7 @@ function bucketForDays(days) {
   return '>15';
 }
 
-async function processBuffer(buffer) {
+async function processBuffer(buffer, options = {}) {
   if (!buffer) throw new Error('No data buffer provided to processBuffer');
   if (!Buffer.isBuffer(buffer) && buffer && buffer.buffer) {
     buffer = Buffer.from(buffer);
@@ -72,6 +72,15 @@ async function processBuffer(buffer) {
     if (openedRaw instanceof Date) openedDate = dayjs(openedRaw);
     else if (openedRaw) openedDate = dayjs(String(openedRaw));
 
+    // apply date filters if provided
+    const start = options.startDate ? dayjs(options.startDate) : null;
+    const end = options.endDate ? dayjs(options.endDate) : null;
+    if ((start || end)) {
+      if (!openedDate || !openedDate.isValid()) continue; // cannot determine date, skip
+      if (start && openedDate.isBefore(start, 'day')) continue;
+      if (end && openedDate.isAfter(end, 'day')) continue;
+    }
+
     const now = dayjs();
     const days = openedDate && openedDate.isValid() ? now.diff(openedDate, 'day') : 0;
     const bucket = bucketForDays(days);
@@ -115,6 +124,8 @@ function renderHtmlTable(data) {
       html += `<th colspan="${buckets.length}">${escapeHtml(status)}</th>`;
     }
   }
+  // Total column for each engineer
+  html += `<th rowspan="2">Total</th>`;
   html += `</tr>`;
 
   // second header row: bucket names repeated for each status
@@ -129,29 +140,50 @@ function renderHtmlTable(data) {
   html += `</tr>`;
   html += `</thead><tbody>`;
 
+  // prepare column sums to render a final totals row
+  const colCount = (statuses.length === 0) ? buckets.length : statuses.length * buckets.length;
+  const colSums = new Array(colCount).fill(0);
+  let grandTotal = 0;
+
   // Body: one row per engineer, columns are status × buckets
   for (const engineer of engineers) {
     html += `<tr><td>${escapeHtml(engineer)}</td>`;
+    let rowTotal = 0;
     if (statuses.length === 0) {
       // no statuses found, sum across all statuses for each bucket
-      for (const b of buckets) {
+      for (let ci = 0; ci < buckets.length; ci++) {
+        const b = buckets[ci];
         let sum = 0;
         const byStatus = aggregated[engineer] || {};
         for (const s of Object.keys(byStatus)) {
           sum += (byStatus[s] && byStatus[s][b]) || 0;
         }
         html += `<td>${sum}</td>`;
+        colSums[ci] += sum;
+        rowTotal += sum;
       }
     } else {
+      let ci = 0;
       for (const status of statuses) {
         for (const b of buckets) {
           const val = (aggregated[engineer] && aggregated[engineer][status] && aggregated[engineer][status][b]) || 0;
           html += `<td>${val}</td>`;
+          colSums[ci] += val;
+          rowTotal += val;
+          ci++;
         }
       }
     }
+    html += `<td><strong>${rowTotal}</strong></td>`;
+    grandTotal += rowTotal;
     html += `</tr>`;
   }
+
+  // Totals row
+  html += `<tr><td><strong>Total</strong></td>`;
+  for (let i = 0; i < colSums.length; i++) html += `<td><strong>${colSums[i]}</strong></td>`;
+  html += `<td><strong>${grandTotal}</strong></td>`;
+  html += `</tr>`;
 
   html += `</tbody></table></body></html>`;
   return html;
