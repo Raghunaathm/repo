@@ -12,8 +12,9 @@ async function main() {
   const out = args[1] || 'out.html';
   const startDate = args[2] || null;
   const endDate = args[3] || null;
+  const slaDays = args[4] ? parseInt(args[4], 10) : null;
   const buffer = fs.readFileSync(input);
-  const data = await processBuffer(buffer, { startDate, endDate });
+  const data = await processBuffer(buffer, { startDate, endDate, slaDays });
   const html = renderHtmlTable(data);
   fs.writeFileSync(out, html, 'utf8');
   console.log('Wrote', out);

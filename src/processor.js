@@ -60,6 +60,7 @@ async function processBuffer(buffer, options = {}) {
   const openedColIdx = col(['log time', 'openeddate', 'opened date', 'opened', 'created']);
   const statusColIdx = col(['status']);
   const engineerColIdx = col(['assigned to engineer', 'engineer']);
+  const slaColIdx = col(['sla', 'sla met', 'sla_met', 'sla_met_status', 'sla met?']);
 
   const aggregated = {}; // engineer -> status -> bucket -> count
   const engineersSet = new Set();
@@ -88,6 +89,15 @@ async function processBuffer(buffer, options = {}) {
     const engineer = engineerColIdx >= 0 ? String(row[engineerColIdx] || '').trim() : '';
     const status = statusColIdx >= 0 ? String(row[statusColIdx] || '').trim() : '';
 
+    // determine SLA (met / not met)
+    let slaMet = null;
+    if (slaColIdx >= 0) {
+      const raw = String(row[slaColIdx] || '').trim().toLowerCase();
+      if (!raw) slaMet = null;
+      else if (raw.includes('met') || raw === 'yes' || raw === 'true' || raw === '1') slaMet = true;
+      else slaMet = false;
+    }
+
     const engKey = engineer || 'Unassigned';
     const statusKey = status || 'Unknown';
 
@@ -100,13 +110,61 @@ async function processBuffer(buffer, options = {}) {
     aggregated[engKey][statusKey][bucket] += 1;
   }
 
-  return {
-    aggregated,
-    engineers: Array.from(engineersSet).sort(),
-    statuses: Array.from(statusesSet).sort(),
-    buckets: AGE_BUCKETS.map(b => b.name)
-  };
-}
+  // compute SLA summary per engineer (if not computed row-by-row)
+  // Re-scan rows to compute SLA counts since we skipped inline counting earlier
+  const slaSummary = {};
+  let totalSlaMet = 0;
+  let totalSlaNotMet = 0;
+  const slaDays = options.slaDays != null ? options.slaDays : 15;
+
+  for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
+    const row = rawRows[i];
+    const openedRaw = openedColIdx >= 0 ? row[openedColIdx] : null;
+    let openedDate = null;
+    if (openedRaw instanceof Date) openedDate = dayjs(openedRaw);
+    else if (openedRaw) openedDate = dayjs(String(openedRaw));
+
+    // apply same date filters used previously
+    const start = options.startDate ? dayjs(options.startDate) : null;
+    const end = options.endDate ? dayjs(options.endDate) : null;
+    if ((start || end)) {
+      if (!openedDate || !openedDate.isValid()) continue;
+      if (start && openedDate.isBefore(start, 'day')) continue;
+      if (end && openedDate.isAfter(end, 'day')) continue;
+    }
+
+    const engineer = engineerColIdx >= 0 ? String(row[engineerColIdx] || '').trim() : '';
+    const engKey = engineer || 'Unassigned';
+
+    let slaMet = null;
+    if (slaColIdx >= 0) {
+      const raw = String(row[slaColIdx] || '').trim().toLowerCase();
+      if (!raw) slaMet = null;
+      else if (raw.includes('met') || raw === 'yes' || raw === 'true' || raw === '1') slaMet = true;
+      else slaMet = false;
+    } else {
+      // determine by threshold days
+      const days = openedDate && openedDate.isValid() ? dayjs().diff(openedDate, 'day') : null;
+      if (days == null) slaMet = null;
+      else slaMet = (days <= slaDays);
+    }
+
+    if (!slaSummary[engKey]) slaSummary[engKey] = { met: 0, notMet: 0 };
+    if (slaMet === true) { slaSummary[engKey].met += 1; totalSlaMet += 1; }
+    else if (slaMet === false) { slaSummary[engKey].notMet += 1; totalSlaNotMet += 1; }
+  }
+
+    // return combined processed data including SLA summary
+    return {
+      aggregated,
+      engineers: Array.from(engineersSet).sort(),
+      statuses: Array.from(statusesSet).sort(),
+      buckets: AGE_BUCKETS.map(b => b.name),
+      slaSummary,
+      totalSlaMet,
+      totalSlaNotMet,
+      slaDays
+    };
 
 function renderHtmlTable(data) {
   const { aggregated, engineers, statuses, buckets } = data;
@@ -185,7 +243,29 @@ function renderHtmlTable(data) {
   html += `<td><strong>${grandTotal}</strong></td>`;
   html += `</tr>`;
 
-  html += `</tbody></table></body></html>`;
+  html += `</tbody></table>`;
+
+  // Add SLA summary table if available
+  if (data.slaSummary) {
+    html += `<h3>SLA Summary (SLA days: ${data.slaDays || 15})</h3>`;
+    html += `<table>`;
+    html += `<thead><tr><th>Engineer</th><th>SLA Met</th><th>SLA Not Met</th><th>Total</th></tr></thead><tbody>`;
+    const slaSummary = data.slaSummary || {};
+    let overallMet = 0, overallNotMet = 0;
+    const engineersForSla = Object.keys(slaSummary).sort();
+    for (const eng of engineersForSla) {
+      const met = slaSummary[eng].met || 0;
+      const notMet = slaSummary[eng].notMet || 0;
+      const tot = met + notMet;
+      overallMet += met;
+      overallNotMet += notMet;
+      html += `<tr><td>${escapeHtml(eng)}</td><td>${met}</td><td>${notMet}</td><td>${tot}</td></tr>`;
+    }
+    html += `<tr><td><strong>Total</strong></td><td><strong>${overallMet}</strong></td><td><strong>${overallNotMet}</strong></td><td><strong>${overallMet + overallNotMet}</strong></td></tr>`;
+    html += `</tbody></table>`;
+  }
+
+  html += `</body></html>`;
   return html;
 }
 

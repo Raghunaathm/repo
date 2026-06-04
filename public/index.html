@@ -18,6 +18,7 @@
     <div class="filters">
       <label>Start date: <input type="date" id="startDate" name="startDate" /></label>
       <label>End date: <input type="date" id="endDate" name="endDate" /></label>
+      <label>SLA days: <input type="number" id="slaDays" name="slaDays" min="0" placeholder="15" style="width:80px" /></label>
     </div>
   </header>
   <form id="uploadForm">
@@ -42,8 +43,10 @@
       fd.append('file', f);
       const start = document.getElementById('startDate').value;
       const end = document.getElementById('endDate').value;
+      const sla = document.getElementById('slaDays').value;
       if (start) fd.append('startDate', start);
       if (end) fd.append('endDate', end);
+      if (sla) fd.append('slaDays', sla);
       try {
         const res = await fetch('/upload', { method: 'POST', body: fd });
         if (!res.ok) throw new Error('Upload failed');
