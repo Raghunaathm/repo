@@ -60,11 +60,15 @@ async function processBuffer(buffer, options = {}) {
   const openedColIdx = col(['log time', 'openeddate', 'opened date', 'opened', 'created']);
   const statusColIdx = col(['status']);
   const engineerColIdx = col(['assigned to engineer', 'engineer']);
-  const slaColIdx = col(['sla', 'sla met', 'sla_met', 'sla_met_status', 'sla met?']);
+  const firstWorkgroupColIdx = col(['first workgroup name', 'first workgroup', 'workgroup', 'assignment group', 'team']);
+  const slaMetColIdx = col(['sla met', 'sla_met', 'sla met?', 'sla_met?']);
+  const slaBreachColIdx = col(['sla breached', 'breach', 'breached']);
 
   const aggregated = {}; // engineer -> status -> bucket -> count
   const engineersSet = new Set();
   const statusesSet = new Set();
+  const slaByDay = {};
+  const slaBreachByTeam = {};
 
   for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
     const row = rawRows[i];
@@ -87,22 +91,38 @@ async function processBuffer(buffer, options = {}) {
     const bucket = bucketForDays(days);
 
     const engineer = engineerColIdx >= 0 ? String(row[engineerColIdx] || '').trim() : '';
+    const firstWorkgroup = firstWorkgroupColIdx >= 0 ? String(row[firstWorkgroupColIdx] || '').trim() : '';
     const status = statusColIdx >= 0 ? String(row[statusColIdx] || '').trim() : '';
-
-    // determine SLA (met / not met)
-    let slaMet = null;
-    if (slaColIdx >= 0) {
-      const raw = String(row[slaColIdx] || '').trim().toLowerCase();
-      if (!raw) slaMet = null;
-      else if (raw.includes('met') || raw === 'yes' || raw === 'true' || raw === '1') slaMet = true;
-      else slaMet = false;
-    }
+    const slaMetRaw = slaMetColIdx >= 0 ? String(row[slaMetColIdx] || '').trim().toLowerCase() : '';
+    const slaBreachRaw = slaBreachColIdx >= 0 ? String(row[slaBreachColIdx] || '').trim().toLowerCase() : '';
 
     const engKey = engineer || 'Unassigned';
     const statusKey = status || 'Unknown';
 
+    let slaState = null;
+    if (slaMetRaw) {
+      if (['yes', 'true', '1', 'met'].includes(slaMetRaw)) slaState = 'met';
+      else if (['no', 'false', '0', 'not met', 'not_met'].includes(slaMetRaw)) slaState = 'not met';
+    } else if (slaBreachRaw) {
+      if (['yes', 'true', '1', 'breached'].includes(slaBreachRaw)) slaState = 'not met';
+      else if (['no', 'false', '0'].includes(slaBreachRaw)) slaState = 'met';
+    }
+
+    const dayKey = openedDate && openedDate.isValid() ? openedDate.format('YYYY-MM-DD') : 'Unknown';
+
     engineersSet.add(engKey);
     statusesSet.add(statusKey);
+
+    if (!slaByDay[dayKey]) slaByDay[dayKey] = { met: 0, notMet: 0, total: 0 };
+    if (slaState === 'met') slaByDay[dayKey].met += 1;
+    if (slaState === 'not met') slaByDay[dayKey].notMet += 1;
+    slaByDay[dayKey].total += 1;
+
+    const teamKey = firstWorkgroup || engKey;
+    if (!slaBreachByTeam[teamKey]) slaBreachByTeam[teamKey] = { breached: 0, met: 0, total: 0 };
+    if (slaState === 'met') slaBreachByTeam[teamKey].met += 1;
+    if (slaState === 'not met') slaBreachByTeam[teamKey].breached += 1;
+    slaBreachByTeam[teamKey].total += 1;
 
     if (!aggregated[engKey]) aggregated[engKey] = {};
     if (!aggregated[engKey][statusKey]) aggregated[engKey][statusKey] = {};
@@ -110,67 +130,57 @@ async function processBuffer(buffer, options = {}) {
     aggregated[engKey][statusKey][bucket] += 1;
   }
 
-  // compute SLA summary per engineer (if not computed row-by-row)
-  // Re-scan rows to compute SLA counts since we skipped inline counting earlier
-  const slaSummary = {};
-  let totalSlaMet = 0;
-  let totalSlaNotMet = 0;
-  const slaDays = options.slaDays != null ? options.slaDays : 15;
-
-  for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
-    const row = rawRows[i];
-    const openedRaw = openedColIdx >= 0 ? row[openedColIdx] : null;
-    let openedDate = null;
-    if (openedRaw instanceof Date) openedDate = dayjs(openedRaw);
-    else if (openedRaw) openedDate = dayjs(String(openedRaw));
-
-    // apply same date filters used previously
-    const start = options.startDate ? dayjs(options.startDate) : null;
-    const end = options.endDate ? dayjs(options.endDate) : null;
-    if ((start || end)) {
-      if (!openedDate || !openedDate.isValid()) continue;
-      if (start && openedDate.isBefore(start, 'day')) continue;
-      if (end && openedDate.isAfter(end, 'day')) continue;
-    }
-
-    const engineer = engineerColIdx >= 0 ? String(row[engineerColIdx] || '').trim() : '';
-    const engKey = engineer || 'Unassigned';
-
-    let slaMet = null;
-    if (slaColIdx >= 0) {
-      const raw = String(row[slaColIdx] || '').trim().toLowerCase();
-      if (!raw) slaMet = null;
-      else if (raw.includes('met') || raw === 'yes' || raw === 'true' || raw === '1') slaMet = true;
-      else slaMet = false;
-    } else {
-      // determine by threshold days
-      const days = openedDate && openedDate.isValid() ? dayjs().diff(openedDate, 'day') : null;
-      if (days == null) slaMet = null;
-      else slaMet = (days <= slaDays);
-    }
-
-    if (!slaSummary[engKey]) slaSummary[engKey] = { met: 0, notMet: 0 };
-    if (slaMet === true) { slaSummary[engKey].met += 1; totalSlaMet += 1; }
-    else if (slaMet === false) { slaSummary[engKey].notMet += 1; totalSlaNotMet += 1; }
-  }
-
-    // return combined processed data including SLA summary
-    return {
-      aggregated,
-      engineers: Array.from(engineersSet).sort(),
-      statuses: Array.from(statusesSet).sort(),
-      buckets: AGE_BUCKETS.map(b => b.name),
-      slaSummary,
-      totalSlaMet,
-      totalSlaNotMet,
-      slaDays
-    };
+  return {
+    aggregated,
+    engineers: Array.from(engineersSet).sort(),
+    statuses: Array.from(statusesSet).sort(),
+    buckets: AGE_BUCKETS.map(b => b.name),
+    slaByDay: Object.fromEntries(
+      Object.entries(slaByDay).sort(([a], [b]) => a.localeCompare(b))
+    ),
+    slaBreachByTeam: Object.fromEntries(
+      Object.entries(slaBreachByTeam).sort(([a], [b]) => a.localeCompare(b))
+    )
+  };
+}
 
 function renderHtmlTable(data) {
-  const { aggregated, engineers, statuses, buckets } = data;
-  let html = `<!doctype html><html><head><meta charset="utf-8"><title>Incident Report</title><style>table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px;text-align:center}th{background:#eee}</style></head><body>`;
+  const { aggregated, engineers, statuses, buckets, slaByDay, slaBreachByTeam } = data;
+  let html = `<!doctype html><html><head><meta charset="utf-8"><title>Incident Report</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:24px;color:#0f172a;background:#f8fafc}h2,h3{margin:16px 0 10px;color:#0f172a}.table-wrap{overflow-x:auto;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:8px;box-shadow:0 8px 24px rgba(15,23,42,.06)}table{border-collapse:separate;border-spacing:0;width:100%;min-width:900px;table-layout:fixed;font-size:13px;background:#fff}th,td{border:1px solid #e2e8f0;padding:8px 10px;text-align:center;white-space:nowrap}th{background:linear-gradient(180deg,#f8fafc 0%,#eef2ff 100%);color:#334155;font-weight:700;position:sticky;top:0;z-index:1}tbody tr:nth-child(even) td{background:#fbfdff}tbody td:first-child{background:#f8fafc;text-align:left;font-weight:600;color:#111827}tbody td:not(:first-child){text-align:center}.totals-row td{font-weight:700;background:#eef2ff!important}</style></head><body>`;
   html += `<h2>Incident Report</h2>`;
-  html += `<table>`;
+  if (slaByDay && Object.keys(slaByDay).length) {
+    html += `<h3>SLA by Day</h3>`;
+    html += `<div class="table-wrap"><table class="report-table">`;
+    html += `<thead><tr><th>Date</th><th>Met</th><th>Not Met</th><th>Total</th></tr></thead><tbody>`;
+    let metTotal = 0;
+    let notMetTotal = 0;
+    let dayTotal = 0;
+    for (const [day, counts] of Object.entries(slaByDay)) {
+      html += `<tr><td>${escapeHtml(day)}</td><td>${counts.met}</td><td>${counts.notMet}</td><td>${counts.total}</td></tr>`;
+      metTotal += counts.met;
+      notMetTotal += counts.notMet;
+      dayTotal += counts.total;
+    }
+    html += `<tr class="totals-row"><td><strong>Total</strong></td><td><strong>${metTotal}</strong></td><td><strong>${notMetTotal}</strong></td><td><strong>${dayTotal}</strong></td></tr>`;
+    html += `</tbody></table></div>`;
+  }
+  if (slaBreachByTeam && Object.keys(slaBreachByTeam).length) {
+    html += `<h3>SLA Breached by First Workgroup Name</h3>`;
+    html += `<div class="table-wrap"><table class="report-table">`;
+    html += `<thead><tr><th>First Workgroup Name</th><th>Breached</th><th>Met</th><th>Total</th></tr></thead><tbody>`;
+    let breachedTotal = 0;
+    let teamMetTotal = 0;
+    let teamTotal = 0;
+    for (const [team, counts] of Object.entries(slaBreachByTeam)) {
+      html += `<tr><td>${escapeHtml(team)}</td><td>${counts.breached}</td><td>${counts.met}</td><td>${counts.total}</td></tr>`;
+      breachedTotal += counts.breached;
+      teamMetTotal += counts.met;
+      teamTotal += counts.total;
+    }
+    html += `<tr class="totals-row"><td><strong>Total</strong></td><td><strong>${breachedTotal}</strong></td><td><strong>${teamMetTotal}</strong></td><td><strong>${teamTotal}</strong></td></tr>`;
+    html += `</tbody></table></div>`;
+  }
+  html += `<div class="table-wrap"><table class="report-table">`;
   // Build two-row header: first row groups buckets under each status
   html += `<thead>`;
   html += `<tr><th rowspan="2">Engineer</th>`;
@@ -238,34 +248,12 @@ function renderHtmlTable(data) {
   }
 
   // Totals row
-  html += `<tr><td><strong>Total</strong></td>`;
+  html += `<tr class="totals-row"><td><strong>Total</strong></td>`;
   for (let i = 0; i < colSums.length; i++) html += `<td><strong>${colSums[i]}</strong></td>`;
   html += `<td><strong>${grandTotal}</strong></td>`;
   html += `</tr>`;
 
-  html += `</tbody></table>`;
-
-  // Add SLA summary table if available
-  if (data.slaSummary) {
-    html += `<h3>SLA Summary (SLA days: ${data.slaDays || 15})</h3>`;
-    html += `<table>`;
-    html += `<thead><tr><th>Engineer</th><th>SLA Met</th><th>SLA Not Met</th><th>Total</th></tr></thead><tbody>`;
-    const slaSummary = data.slaSummary || {};
-    let overallMet = 0, overallNotMet = 0;
-    const engineersForSla = Object.keys(slaSummary).sort();
-    for (const eng of engineersForSla) {
-      const met = slaSummary[eng].met || 0;
-      const notMet = slaSummary[eng].notMet || 0;
-      const tot = met + notMet;
-      overallMet += met;
-      overallNotMet += notMet;
-      html += `<tr><td>${escapeHtml(eng)}</td><td>${met}</td><td>${notMet}</td><td>${tot}</td></tr>`;
-    }
-    html += `<tr><td><strong>Total</strong></td><td><strong>${overallMet}</strong></td><td><strong>${overallNotMet}</strong></td><td><strong>${overallMet + overallNotMet}</strong></td></tr>`;
-    html += `</tbody></table>`;
-  }
-
-  html += `</body></html>`;
+  html += `</tbody></table></div></body></html>`;
   return html;
 }
 

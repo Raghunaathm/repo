@@ -17,7 +17,6 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     const options = {
       startDate: req.body.startDate || null,
       endDate: req.body.endDate || null,
-      slaDays: req.body.slaDays ? parseInt(req.body.slaDays, 10) : null,
     };
     const aggregated = await processBuffer(req.file.buffer, options);
     const html = renderHtmlTable(aggregated);
