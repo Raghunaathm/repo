@@ -60,8 +60,9 @@ async function processBuffer(buffer, options = {}) {
   const openedColIdx = col(['log time', 'openeddate', 'opened date', 'opened', 'created']);
   const statusColIdx = col(['status']);
   const engineerColIdx = col(['assigned to engineer', 'engineer']);
+  const classificationColIdx = col(['classification', 'classification type', 'ticket classification', 'ticket type', 'type', 'category', 'service category']);
   const firstWorkgroupColIdx = col(['first workgroup name', 'first workgroup', 'workgroup', 'assignment group', 'team']);
-  const slaMetColIdx = col(['sla met', 'sla_met', 'sla met?', 'sla_met?']);
+  const slaMetColIdx = col(['response sla met', 'response sla', 'sla met', 'sla_met', 'sla met?', 'sla_met?']);
   const slaBreachColIdx = col(['sla breached', 'breach', 'breached']);
 
   const aggregated = {}; // engineer -> status -> bucket -> count
@@ -69,6 +70,9 @@ async function processBuffer(buffer, options = {}) {
   const statusesSet = new Set();
   const slaByDay = {};
   const slaBreachByTeam = {};
+  const responseSlaByClassification = {};
+  const classificationsSet = new Set();
+  const responseMonthSet = new Set();
 
   for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
     const row = rawRows[i];
@@ -91,6 +95,7 @@ async function processBuffer(buffer, options = {}) {
     const bucket = bucketForDays(days);
 
     const engineer = engineerColIdx >= 0 ? String(row[engineerColIdx] || '').trim() : '';
+    const classification = classificationColIdx >= 0 ? String(row[classificationColIdx] || '').trim() : 'All';
     const firstWorkgroup = firstWorkgroupColIdx >= 0 ? String(row[firstWorkgroupColIdx] || '').trim() : '';
     const status = statusColIdx >= 0 ? String(row[statusColIdx] || '').trim() : '';
     const slaMetRaw = slaMetColIdx >= 0 ? String(row[slaMetColIdx] || '').trim().toLowerCase() : '';
@@ -109,8 +114,10 @@ async function processBuffer(buffer, options = {}) {
     }
 
     const dayKey = openedDate && openedDate.isValid() ? openedDate.format('YYYY-MM-DD') : 'Unknown';
+    const monthKey = openedDate && openedDate.isValid() ? openedDate.format('YYYY-MM') : 'Unknown';
 
     engineersSet.add(engKey);
+    classificationsSet.add(classification || 'All');
     statusesSet.add(statusKey);
 
     if (!slaByDay[dayKey]) slaByDay[dayKey] = { met: 0, notMet: 0, total: 0 };
@@ -123,6 +130,15 @@ async function processBuffer(buffer, options = {}) {
     if (slaState === 'met') slaBreachByTeam[teamKey].met += 1;
     if (slaState === 'not met') slaBreachByTeam[teamKey].breached += 1;
     slaBreachByTeam[teamKey].total += 1;
+
+    if (slaState) {
+      if (!responseSlaByClassification[classification]) responseSlaByClassification[classification] = {};
+      if (!responseSlaByClassification[classification][monthKey]) responseSlaByClassification[classification][monthKey] = { met: 0, notMet: 0, total: 0 };
+      const field = slaState === 'met' ? 'met' : 'notMet';
+      responseSlaByClassification[classification][monthKey][field] += 1;
+      responseSlaByClassification[classification][monthKey].total += 1;
+      responseMonthSet.add(monthKey);
+    }
 
     if (!aggregated[engKey]) aggregated[engKey] = {};
     if (!aggregated[engKey][statusKey]) aggregated[engKey][statusKey] = {};
@@ -140,12 +156,17 @@ async function processBuffer(buffer, options = {}) {
     ),
     slaBreachByTeam: Object.fromEntries(
       Object.entries(slaBreachByTeam).sort(([a], [b]) => a.localeCompare(b))
-    )
+    ),
+    responseSlaByClassification: Object.fromEntries(
+      Object.entries(responseSlaByClassification).sort(([a], [b]) => a.localeCompare(b))
+    ),
+    responseSlaMonths: Array.from(responseMonthSet).sort()
   };
 }
 
 function renderHtmlTable(data) {
-  const { aggregated, engineers, statuses, buckets, slaByDay, slaBreachByTeam } = data;
+  const { aggregated, engineers, statuses, buckets, slaByDay, slaBreachByTeam, responseSlaByClassification, responseSlaMonths } = data;
+  const visibleStatuses = (statuses || []).filter(status => !['cancelled', 'new'].includes(String(status).trim().toLowerCase()));
   let html = `<!doctype html><html><head><meta charset="utf-8"><title>Incident Report</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:24px;color:#0f172a;background:#f8fafc}h2,h3{margin:16px 0 10px;color:#0f172a}.table-wrap{overflow-x:auto;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:8px;box-shadow:0 8px 24px rgba(15,23,42,.06)}table{border-collapse:separate;border-spacing:0;width:100%;min-width:900px;table-layout:fixed;font-size:13px;background:#fff}th,td{border:1px solid #e2e8f0;padding:8px 10px;text-align:center;white-space:nowrap}th{background:linear-gradient(180deg,#f8fafc 0%,#eef2ff 100%);color:#334155;font-weight:700;position:sticky;top:0;z-index:1}tbody tr:nth-child(even) td{background:#fbfdff}tbody td:first-child{background:#f8fafc;text-align:left;font-weight:600;color:#111827}tbody td:not(:first-child){text-align:center}.totals-row td{font-weight:700;background:#eef2ff!important}</style></head><body>`;
   html += `<h2>Incident Report</h2>`;
   if (slaByDay && Object.keys(slaByDay).length) {
@@ -180,15 +201,61 @@ function renderHtmlTable(data) {
     html += `<tr class="totals-row"><td><strong>Total</strong></td><td><strong>${breachedTotal}</strong></td><td><strong>${teamMetTotal}</strong></td><td><strong>${teamTotal}</strong></td></tr>`;
     html += `</tbody></table></div>`;
   }
+
+  if (responseSlaByClassification && Object.keys(responseSlaByClassification).length) {
+    const months = Array.from(new Set(responseSlaMonths)).sort();
+    html += `<h3>Response SLA by Classification</h3>`;
+    html += `<div class="table-wrap"><table class="report-table">`;
+    html += `<thead><tr><th rowspan="2">Classification</th>`;
+    for (const month of months) {
+      html += `<th colspan="3">${escapeHtml(month)}</th>`;
+    }
+    html += `<th rowspan="2">Grand Total</th></tr>`;
+    html += `<tr>`;
+    for (let i = 0; i < months.length; i++) {
+      html += `<th>Met</th><th>Not Met</th><th>Total</th>`;
+    }
+    html += `</tr></thead><tbody>`;
+
+    let grandMet = 0;
+    let grandNotMet = 0;
+    let grandTotal = 0;
+
+    for (const [classification, monthData] of Object.entries(responseSlaByClassification)) {
+      html += `<tr><td>${escapeHtml(classification)}</td>`;
+      let classificationTotal = 0;
+      for (const month of months) {
+        const counts = monthData[month] || { met: 0, notMet: 0, total: 0 };
+        html += `<td>${counts.met}</td><td>${counts.notMet}</td><td>${counts.total}</td>`;
+        grandMet += counts.met;
+        grandNotMet += counts.notMet;
+        grandTotal += counts.total;
+        classificationTotal += counts.total;
+      }
+      html += `<td><strong>${classificationTotal}</strong></td></tr>`;
+    }
+
+    html += `<tr class="totals-row"><td><strong>Total</strong></td>`;
+    for (const month of months) {
+      const monthSum = months.reduce((sum, m) => sum, 0); // placeholder logic, values are already in grand totals below
+      const met = Object.values(responseSlaByClassification).reduce((sum, monthData) => sum + ((monthData[month] && monthData[month].met) || 0), 0);
+      const notMet = Object.values(responseSlaByClassification).reduce((sum, monthData) => sum + ((monthData[month] && monthData[month].notMet) || 0), 0);
+      const total = Object.values(responseSlaByClassification).reduce((sum, monthData) => sum + ((monthData[month] && monthData[month].total) || 0), 0);
+      html += `<td><strong>${met}</strong></td><td><strong>${notMet}</strong></td><td><strong>${total}</strong></td>`;
+    }
+    html += `<td><strong>${grandTotal}</strong></td></tr>`;
+    html += `</tbody></table></div>`;
+  }
+
   html += `<div class="table-wrap"><table class="report-table">`;
   // Build two-row header: first row groups buckets under each status
   html += `<thead>`;
   html += `<tr><th rowspan="2">Engineer</th>`;
-  if (statuses.length === 0) {
+  if (visibleStatuses.length === 0) {
     // fallback: single status column with buckets
     html += `<th colspan="${buckets.length}">Status</th>`;
   } else {
-    for (const status of statuses) {
+    for (const status of visibleStatuses) {
       html += `<th colspan="${buckets.length}">${escapeHtml(status)}</th>`;
     }
   }
@@ -198,10 +265,10 @@ function renderHtmlTable(data) {
 
   // second header row: bucket names repeated for each status
   html += `<tr>`;
-  if (statuses.length === 0) {
+  if (visibleStatuses.length === 0) {
     for (const b of buckets) html += `<th>${b}</th>`;
   } else {
-    for (let i = 0; i < statuses.length; i++) {
+    for (let i = 0; i < visibleStatuses.length; i++) {
       for (const b of buckets) html += `<th>${b}</th>`;
     }
   }
@@ -209,7 +276,7 @@ function renderHtmlTable(data) {
   html += `</thead><tbody>`;
 
   // prepare column sums to render a final totals row
-  const colCount = (statuses.length === 0) ? buckets.length : statuses.length * buckets.length;
+  const colCount = (visibleStatuses.length === 0) ? buckets.length : visibleStatuses.length * buckets.length;
   const colSums = new Array(colCount).fill(0);
   let grandTotal = 0;
 
@@ -217,7 +284,7 @@ function renderHtmlTable(data) {
   for (const engineer of engineers) {
     html += `<tr><td>${escapeHtml(engineer)}</td>`;
     let rowTotal = 0;
-    if (statuses.length === 0) {
+    if (visibleStatuses.length === 0) {
       // no statuses found, sum across all statuses for each bucket
       for (let ci = 0; ci < buckets.length; ci++) {
         const b = buckets[ci];
@@ -232,7 +299,7 @@ function renderHtmlTable(data) {
       }
     } else {
       let ci = 0;
-      for (const status of statuses) {
+      for (const status of visibleStatuses) {
         for (const b of buckets) {
           const val = (aggregated[engineer] && aggregated[engineer][status] && aggregated[engineer][status][b]) || 0;
           html += `<td>${val}</td>`;
