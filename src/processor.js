@@ -189,23 +189,6 @@ function renderHtmlTable(data) {
     html += `<tr class="totals-row"><td><strong>Total</strong></td><td><strong>${metTotal}</strong></td><td><strong>${notMetTotal}</strong></td><td><strong>${dayTotal}</strong></td></tr>`;
     html += `</tbody></table></div>`;
   }
-  if (slaBreachByTeam && Object.keys(slaBreachByTeam).length) {
-    html += `<h3>SLA Breached by First Workgroup Name</h3>`;
-    html += `<div class="table-wrap"><table class="report-table" data-title="SLA Breached by First Workgroup Name">`;
-    html += `<thead><tr><th>First Workgroup Name</th><th>Breached</th><th>Met</th><th>Total</th></tr></thead><tbody>`;
-    let breachedTotal = 0;
-    let teamMetTotal = 0;
-    let teamTotal = 0;
-    for (const [team, counts] of Object.entries(slaBreachByTeam)) {
-      html += `<tr><td>${escapeHtml(team)}</td><td>${counts.breached}</td><td>${counts.met}</td><td>${counts.total}</td></tr>`;
-      breachedTotal += counts.breached;
-      teamMetTotal += counts.met;
-      teamTotal += counts.total;
-    }
-    html += `<tr class="totals-row"><td><strong>Total</strong></td><td><strong>${breachedTotal}</strong></td><td><strong>${teamMetTotal}</strong></td><td><strong>${teamTotal}</strong></td></tr>`;
-    html += `</tbody></table></div>`;
-  }
-
   if (responseSlaByClassification && Object.keys(responseSlaByClassification).length) {
     const months = Array.from(new Set(responseSlaMonths)).sort();
     html += `<h3>Response SLA by Workgroup Name</h3>`;
