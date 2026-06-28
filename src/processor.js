@@ -167,11 +167,12 @@ async function processBuffer(buffer, options = {}) {
 function renderHtmlTable(data) {
   const { aggregated, engineers, statuses, buckets, slaByDay, slaBreachByTeam, responseSlaByClassification, responseSlaMonths } = data;
   const visibleStatuses = (statuses || []).filter(status => !['cancelled', 'new'].includes(String(status).trim().toLowerCase()));
-  let html = `<!doctype html><html><head><meta charset="utf-8"><title>Incident Report</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:24px;color:#0f172a;background:#f8fafc}h2,h3{margin:16px 0 10px;color:#0f172a}.table-wrap{overflow-x:auto;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:8px;box-shadow:0 8px 24px rgba(15,23,42,.06)}table{border-collapse:separate;border-spacing:0;width:100%;min-width:900px;table-layout:fixed;font-size:13px;background:#fff}th,td{border:1px solid #e2e8f0;padding:8px 10px;text-align:center;white-space:nowrap}th{background:linear-gradient(180deg,#f8fafc 0%,#eef2ff 100%);color:#334155;font-weight:700;position:sticky;top:0;z-index:1}tbody tr:nth-child(even) td{background:#fbfdff}tbody td:first-child{background:#f8fafc;text-align:left;font-weight:600;color:#111827}tbody td:not(:first-child){text-align:center}.totals-row td{font-weight:700;background:#eef2ff!important}</style></head><body>`;
+  let html = `<!doctype html><html><head><meta charset="utf-8"><title>Incident Report</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:24px;color:#0f172a;background:#f8fafc}h2,h3{margin:16px 0 10px;color:#0f172a}.toolbar{display:flex;justify-content:flex-end;margin:8px 0 16px}.toolbar button{background:#2563eb;color:#fff;border:none;border-radius:8px;padding:10px 14px;font-weight:600;cursor:pointer}.toolbar button:hover{background:#1d4ed8}.table-wrap{overflow-x:auto;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:8px;box-shadow:0 8px 24px rgba(15,23,42,.06)}table{border-collapse:separate;border-spacing:0;width:100%;min-width:900px;table-layout:fixed;font-size:13px;background:#fff}th,td{border:1px solid #e2e8f0;padding:8px 10px;text-align:center;white-space:nowrap}th{background:linear-gradient(180deg,#f8fafc 0%,#eef2ff 100%);color:#334155;font-weight:700;position:sticky;top:0;z-index:1}tbody tr:nth-child(even) td{background:#fbfdff}tbody td:first-child{background:#f8fafc;text-align:left;font-weight:600;color:#111827}tbody td:not(:first-child){text-align:center}.totals-row td{font-weight:700;background:#eef2ff!important}</style></head><body>`;
+  html += `<div class="toolbar"><button type="button" id="downloadCsvBtn">Download CSV</button></div>`;
   html += `<h2>Incident Report</h2>`;
   if (slaByDay && Object.keys(slaByDay).length) {
     html += `<h3>SLA by Day</h3>`;
-    html += `<div class="table-wrap"><table class="report-table">`;
+    html += `<div class="table-wrap"><table class="report-table" data-title="SLA by Day">`;
     html += `<thead><tr><th>Date</th><th>Met</th><th>Not Met</th><th>Total</th></tr></thead><tbody>`;
     let metTotal = 0;
     let notMetTotal = 0;
@@ -187,7 +188,7 @@ function renderHtmlTable(data) {
   }
   if (slaBreachByTeam && Object.keys(slaBreachByTeam).length) {
     html += `<h3>SLA Breached by First Workgroup Name</h3>`;
-    html += `<div class="table-wrap"><table class="report-table">`;
+    html += `<div class="table-wrap"><table class="report-table" data-title="SLA Breached by First Workgroup Name">`;
     html += `<thead><tr><th>First Workgroup Name</th><th>Breached</th><th>Met</th><th>Total</th></tr></thead><tbody>`;
     let breachedTotal = 0;
     let teamMetTotal = 0;
@@ -205,7 +206,7 @@ function renderHtmlTable(data) {
   if (responseSlaByClassification && Object.keys(responseSlaByClassification).length) {
     const months = Array.from(new Set(responseSlaMonths)).sort();
     html += `<h3>Response SLA by Classification</h3>`;
-    html += `<div class="table-wrap"><table class="report-table">`;
+    html += `<div class="table-wrap"><table class="report-table" data-title="Response SLA by Classification">`;
     html += `<thead><tr><th rowspan="2">Classification</th>`;
     for (const month of months) {
       html += `<th colspan="3">${escapeHtml(month)}</th>`;
@@ -247,7 +248,7 @@ function renderHtmlTable(data) {
     html += `</tbody></table></div>`;
   }
 
-  html += `<div class="table-wrap"><table class="report-table">`;
+  html += `<div class="table-wrap"><table class="report-table" data-title="Engineer by Status and Age Bucket">`;
   // Build two-row header: first row groups buckets under each status
   html += `<thead>`;
   html += `<tr><th rowspan="2">Engineer</th>`;
@@ -320,7 +321,39 @@ function renderHtmlTable(data) {
   html += `<td><strong>${grandTotal}</strong></td>`;
   html += `</tr>`;
 
-  html += `</tbody></table></div></body></html>`;
+  html += `</tbody></table></div>`;
+  html += `<script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const btn = document.getElementById('downloadCsvBtn');
+      if (!btn) return;
+      btn.addEventListener('click', () => {
+        const tables = Array.from(document.querySelectorAll('table.report-table'));
+        const lines = [];
+        const escapeCsv = (value) => '"' + String(value).replace(/"/g, '""') + '"';
+        const toCsvRow = (values) => values.map(escapeCsv).join(',');
+
+        tables.forEach((table, index) => {
+          const title = table.getAttribute('data-title') || ('Table ' + (index + 1));
+          lines.push(toCsvRow([title]));
+          Array.from(table.querySelectorAll('tr')).forEach((row) => {
+            const values = Array.from(row.querySelectorAll('th, td')).map(cell => cell.textContent.trim());
+            if (values.length) lines.push(toCsvRow(values));
+          });
+          lines.push('');
+        });
+
+        const csv = lines.join('\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'incident-report.csv';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
+      });
+    });
+  </script></body></html>`;
   return html;
 }
 
