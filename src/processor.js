@@ -61,6 +61,7 @@ async function processBuffer(buffer, options = {}) {
   const statusColIdx = col(['status']);
   const engineerColIdx = col(['assigned to engineer', 'engineer']);
   const classificationColIdx = col(['classification', 'classification type', 'ticket classification', 'ticket type', 'type', 'category', 'service category']);
+  const workgroupNameColIdx = col(['workgroup name', 'workgroup']);
   const firstWorkgroupColIdx = col(['first workgroup name', 'first workgroup', 'workgroup', 'assignment group', 'team']);
   const slaMetColIdx = col(['response sla met', 'response sla', 'sla met', 'sla_met', 'sla met?', 'sla_met?']);
   const slaBreachColIdx = col(['sla breached', 'breach', 'breached']);
@@ -96,6 +97,8 @@ async function processBuffer(buffer, options = {}) {
 
     const engineer = engineerColIdx >= 0 ? String(row[engineerColIdx] || '').trim() : '';
     const classification = classificationColIdx >= 0 ? String(row[classificationColIdx] || '').trim() : 'All';
+    const workgroupName = workgroupNameColIdx >= 0 ? String(row[workgroupNameColIdx] || '').trim() : '';
+    const responseSlaGroup = workgroupName || classification || 'All';
     const firstWorkgroup = firstWorkgroupColIdx >= 0 ? String(row[firstWorkgroupColIdx] || '').trim() : '';
     const status = statusColIdx >= 0 ? String(row[statusColIdx] || '').trim() : '';
     const slaMetRaw = slaMetColIdx >= 0 ? String(row[slaMetColIdx] || '').trim().toLowerCase() : '';
@@ -132,11 +135,11 @@ async function processBuffer(buffer, options = {}) {
     slaBreachByTeam[teamKey].total += 1;
 
     if (slaState) {
-      if (!responseSlaByClassification[classification]) responseSlaByClassification[classification] = {};
-      if (!responseSlaByClassification[classification][monthKey]) responseSlaByClassification[classification][monthKey] = { met: 0, notMet: 0, total: 0 };
+      if (!responseSlaByClassification[responseSlaGroup]) responseSlaByClassification[responseSlaGroup] = {};
+      if (!responseSlaByClassification[responseSlaGroup][monthKey]) responseSlaByClassification[responseSlaGroup][monthKey] = { met: 0, notMet: 0, total: 0 };
       const field = slaState === 'met' ? 'met' : 'notMet';
-      responseSlaByClassification[classification][monthKey][field] += 1;
-      responseSlaByClassification[classification][monthKey].total += 1;
+      responseSlaByClassification[responseSlaGroup][monthKey][field] += 1;
+      responseSlaByClassification[responseSlaGroup][monthKey].total += 1;
       responseMonthSet.add(monthKey);
     }
 
@@ -205,8 +208,8 @@ function renderHtmlTable(data) {
 
   if (responseSlaByClassification && Object.keys(responseSlaByClassification).length) {
     const months = Array.from(new Set(responseSlaMonths)).sort();
-    html += `<h3>Response SLA by Classification</h3>`;
-    html += `<div class="table-wrap"><table class="report-table" data-title="Response SLA by Classification">`;
+    html += `<h3>Response SLA by Workgroup Name</h3>`;
+    html += `<div class="table-wrap"><table class="report-table" data-title="Response SLA by Workgroup Name">`;
     html += `<thead><tr><th rowspan="2">Classification</th>`;
     for (const month of months) {
       html += `<th colspan="3">${escapeHtml(month)}</th>`;
@@ -323,36 +326,35 @@ function renderHtmlTable(data) {
 
   html += `</tbody></table></div>`;
   html += `<script>
-    document.addEventListener('DOMContentLoaded', () => {
       const btn = document.getElementById('downloadCsvBtn');
-      if (!btn) return;
-      btn.addEventListener('click', () => {
-        const tables = Array.from(document.querySelectorAll('table.report-table'));
-        const lines = [];
-        const escapeCsv = (value) => '"' + String(value).replace(/"/g, '""') + '"';
-        const toCsvRow = (values) => values.map(escapeCsv).join(',');
+      if (btn) {
+        btn.addEventListener('click', () => {
+          const tables = Array.from(document.querySelectorAll('table.report-table'));
+          const lines = [];
+          const escapeCsv = (value) => '"' + String(value).replace(/"/g, '""') + '"';
+          const toCsvRow = (values) => values.map(escapeCsv).join(',');
 
-        tables.forEach((table, index) => {
-          const title = table.getAttribute('data-title') || ('Table ' + (index + 1));
-          lines.push(toCsvRow([title]));
-          Array.from(table.querySelectorAll('tr')).forEach((row) => {
-            const values = Array.from(row.querySelectorAll('th, td')).map(cell => cell.textContent.trim());
-            if (values.length) lines.push(toCsvRow(values));
+          tables.forEach((table, index) => {
+            const title = table.getAttribute('data-title') || ('Table ' + (index + 1));
+            lines.push(toCsvRow([title]));
+            Array.from(table.querySelectorAll('tr')).forEach((row) => {
+              const values = Array.from(row.querySelectorAll('th, td')).map(cell => cell.textContent.trim());
+              if (values.length) lines.push(toCsvRow(values));
+            });
+            lines.push('');
           });
-          lines.push('');
-        });
 
-        const csv = lines.join('\n');
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = 'incident-report.csv';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(link.href);
-      });
-    });
+          const csv = lines.join('\n');
+          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+          const link = document.createElement('a');
+          link.href = URL.createObjectURL(blob);
+          link.download = 'incident-report.csv';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(link.href);
+        });
+      }
   </script></body></html>`;
   return html;
 }
